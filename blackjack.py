@@ -104,16 +104,79 @@ def simulation_sequence(policy, state, userCard, dealCard, ccards):
                         dealSum -= 10
         state = make_state(userSum, userA, dealFirst, dealAFirst)
 
-def simulate_one_step(state, action, userCard, dealCard, ccards, stand):
+
+# Simulating one step by following a policy
+def simulate_one_step(state, action, userCard, dealCard, ccards):
     #Need to implement this for TD and QL
-    pass
+    userSum = state[0]
+    userA = state[1]
+    dealFirst = state[2]
+    dealAFirst = state[3]
+    dealSum = state[2]
+    dealA = state[3]
+    gameover = False
+    reward = 0
 
+    if action == 0:
+        #Give player a card
+        card, cA = genCard(ccards, userCard)
+        userA += cA
+        userSum += getAmt(card)
+        while userSum > 21 and userA > 0:
+            userA -= 1
+            userSum -= 10
+        reward = 0
+        next_state = make_state(userSum, userA, dealFirst, dealAFirst)
+    else:
+        #Dealer plays, user stands
+        next_state = None
+        if ((userSum >= 21 and userA == 0) or len(userCard) == 5) or (len(userCard) == 2 and userSum == 21):
+            if userSum == dealSum:
+                reward = 0
+            elif userSum <= 21 and len(userCard) == 5:
+                reward = 1
+            elif userSum <= 21 and dealSum < userSum or dealSum > 21:
+                reward = 1
+            else:
+                reward = -1
+            return (next_state, reward)
+
+        # Simulate dealer and decide a reward based on the result
+        while dealSum <= userSum and dealSum < 17:
+            card, cA = genCard(ccards, dealCard)
+            dealA += cA
+            dealSum += getAmt(card)
+            while dealSum > 21 and dealA > 0:
+                dealA -= 1
+                dealSum -= 10
+        if userSum == dealSum:
+            reward = 0
+        elif userSum <= 21 and len(userCard) == 5:
+            reward = 1
+        elif userSum <= 21 and dealSum < userSum or dealSum > 21:
+            reward = 1
+        else:
+            reward = -1    
+
+    return (next_state, reward)
+
+# Reward-to-go function that implemented for MC policy evaluation.
+# Follow the formula described on lecture note
 def reward_to_go(s, gamma, episode):
-    # Placeholder, need to implement the right calculation
-    return 0
+    reward = 0
+    decided = False
+    k = 0
+    for i in range(len(episode)):
+        if episode[i] == s and decided == False:
+            decided = True
+        if decided == True:
+            reward = reward + (np.power(gamma, k) * episode[i][1])
+            k = k+1
+    return reward
 
+# Monte Carlo Policy Evaluation: evaluate policy by computing average reward-to-go of each state.
 def MC_Policy_Evaluation(policy, states, gamma, MCvalues, G):
-    #Perform 50 simulations in each cycle in each game loop (so total number of simulations increases quickly)
+    # Perform 50 simulations in each cycle in each game loop
     for simulation in range(50):
         # generate random game
         userCard = []
@@ -121,18 +184,76 @@ def MC_Policy_Evaluation(policy, states, gamma, MCvalues, G):
         ccards = copy.copy(cards)
         userSum, userA, dealSum, dealA, dealFirst, dealAFirst = initGame(ccards, userCard, dealCard)
         state = make_state(userSum, userA, dealFirst, dealAFirst)
+
         # do simulation
         episode = simulation_sequence(policy, state, userCard, dealCard, ccards)
-        # update
         for e in episode:
-            #This line is a placeholder. Remove. Need more lines too, of course. 
-            MCvalues[e[0]] += 0.001
+            G[e[0]].append(reward_to_go(e, gamma, episode))
+            MCvalues[e[0]] = np.average(G[e[0]])
 
+# Temporal Difference Policy Evaluation: evaluate policy by updating values on each step.
 def TD_Policy_Evaluation(policy, states, gamma, TDvalues, NTD):
-    pass
+    # Perform 50 simulations in each cycle in each game loop
+    for simulation in range(50):
+        # generate random game
+        userCard = []
+        dealCard = []
+        ccards = copy.copy(cards)
+        userSum, userA, dealSum, dealA, dealFirst, dealAFirst = initGame(ccards, userCard, dealCard)
+        state = make_state(userSum, userA, dealFirst, dealAFirst)
 
+        # do simulation
+        while state:
+            next_state, reward = simulate_one_step(state, policy(state[0]), userCard, dealCard, ccards)
+            NTD[state] = NTD[state] + 1
+            alpha = 10.0/(9+NTD[state])
+            next_TDvalues = TDvalues[next_state] if next_state else 0
+            TDvalues[state] = TDvalues[state] + alpha * (reward + (gamma * next_TDvalues) - TDvalues[state])
+            state = next_state
+
+# Pick action. return 0 for hit, return 1 for stand
+def pick_action(state, eps, Qvalues):
+    # For the busted case, the result should be terminal in any case.
+    if state[0] >= 21:
+        return 1
+    # Exploration
+    if random.uniform(0,1) < eps:
+        return random.choice([0,1])
+    # Exploitation
+    else:
+        # Return the action that produces higher Q-value
+        if Qvalues[state][0] >= Qvalues[state][1]:
+            return 0
+        else:
+            return 1
+
+# Q-Learning: update values on each step and pick an action based on epsilon-greedy policy
 def Q_Learning(states, gamma, Qvalues, NQ):
-    pass
+    # Perform 50 simulations in each cycle in each game loop
+    for simulation in range(50):
+        # generate random game
+        userCard = []
+        dealCard = []
+        ccards = copy.copy(cards)
+        userSum, userA, dealSum, dealA, dealFirst, dealAFirst = initGame(ccards, userCard, dealCard)
+        state = make_state(userSum, userA, dealFirst, dealAFirst)
+        eps = 0.3   # epsilon for exploration vs exploitatin
+
+        # do simulation
+        while state:
+            a = pick_action(state, eps, Qvalues) # action based on current state.
+            next_state, reward = simulate_one_step(state, a, userCard, dealCard, ccards)
+            NQ[state] = NQ[state] + 1
+            alpha = 10.0/(9+NQ[state])
+            # Determine the maximum Qvalues for the next state
+            max_Qvalues = max(Qvalues[next_state][0], Qvalues[next_state][1]) if next_state else 0
+            # The following a block is the case where current action is hit and by taking the action next will become terminal
+            # This is to prevents Qvalues[state][0] never becomeing negative.
+            if a == 0 and pick_action(next_state, eps, Qvalues) == 1:
+                _, reward = simulate_one_step(next_state, 1, userCard, dealCard, ccards)
+                max_Qvalues = 0
+            Qvalues[state][a] = Qvalues[state][a] + alpha * (reward + gamma * max_Qvalues - Qvalues[state][a])
+            state = next_state
 
 def main():
     ccards = copy.copy(cards)
